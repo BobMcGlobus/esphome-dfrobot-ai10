@@ -17,6 +17,7 @@
 #include "esphome/core/component.h"
 #include "esphome/components/uart/uart.h"
 #include "esphome/core/log.h"
+#include "esphome/core/automation.h"
 
 #include <vector>
 #include <string>
@@ -84,6 +85,11 @@ enum ParserState : uint8_t {
 
 class DFRobotAI10Component : public Component, public uart::UARTDevice {
  public:
+ 
+  void add_on_recognized_callback(std::function<void(std::string, uint16_t)> &&callback) {
+    this->on_recognized_callback_.add(std::move(callback));
+  }
+
   float get_setup_priority() const override { return setup_priority::DATA; }
   void setup() override;
   void loop() override;
@@ -109,6 +115,9 @@ class DFRobotAI10Component : public Component, public uart::UARTDevice {
   uint8_t get_user_count() const { return this->user_count_; }
 
  protected:
+  // CallbackManager
+  CallbackManager<void(std::string, uint16_t)> on_recognized_callback_;
+
   // Send a complete packet: [SYNC_H][SYNC_L][data...][XOR]
   void send_packet_(const uint8_t *data, size_t len);
 
@@ -154,6 +163,15 @@ class DFRobotAI10Component : public Component, public uart::UARTDevice {
   // Timing
   uint32_t last_status_log_{0};
   bool setup_done_{false};
+};
+
+class RecognizedTrigger : public Trigger<std::string, uint16_t> {
+ public:
+  explicit RecognizedTrigger(DFRobotAI10Component *parent) {
+    parent->add_on_recognized_callback([this](std::string name, uint16_t uid) {
+      this->trigger(name, uid);
+    });
+  }
 };
 
 }  // namespace dfrobot_ai10

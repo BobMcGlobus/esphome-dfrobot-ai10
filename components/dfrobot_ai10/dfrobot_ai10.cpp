@@ -256,6 +256,15 @@ void DFRobotAI10Component::handle_reply_(const uint8_t *payload, uint16_t len) {
 
   if (result != RES_SUCCESS) {
     ESP_LOGW(TAG, "  Command failed: %s", result_to_str_(result));
+
+    if (cmd_echo == CMD_VERIFY) {
+       this->recognized_ = false;
+       this->last_uid_ = 0;
+       this->last_user_name_ = "";
+       this->last_type_ = TYPE_NONE;
+      
+    }
+
     return;
   }
 
@@ -285,6 +294,8 @@ void DFRobotAI10Component::handle_reply_(const uint8_t *payload, uint16_t len) {
         ESP_LOGI(TAG, "  RECOGNIZED: uid=%d name='%s' admin=%d type=%s",
                  uid, name, admin,
                  this->last_type_ == TYPE_FACE ? "face" : "palm");
+
+        this->on_recognized_callback_.call(this->last_user_name_, this->last_uid_);         
       }
       break;
 
@@ -356,6 +367,7 @@ void DFRobotAI10Component::handle_note_(const uint8_t *payload, uint16_t len) {
     uint8_t note_val = payload[1];
     if (note_type == 0x0A && note_val == 0x00) {
       this->face_detected_ = false;  // face/palm lost
+      this->recognized_ = false;
     }
     ESP_LOGD(TAG, "NOTE: %d bytes (type=0x%02X val=0x%02X)", len, note_type, note_val);
   } else {
