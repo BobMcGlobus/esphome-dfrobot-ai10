@@ -24,7 +24,7 @@ static const uint8_t SYNC_H = 0xEF;
 static const uint8_t SYNC_L = 0xAA;
 
 // Message IDs (response)
-static const uint8_t MID_RELAY = 0x00;  // Reply to a command
+static const uint8_t MID_REPLY = 0x00;  // Reply to a command
 static const uint8_t MID_NOTE  = 0x01;  // Notification (face position, state)
 
 // Command IDs

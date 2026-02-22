@@ -106,6 +106,7 @@ void DFRobotAI10Component::send_reset() {
 }
 
 void DFRobotAI10Component::start_recognition(uint8_t timeout, bool continuous) {
+  if (this->pending_action_ != PENDING_NONE) return;
   // Store intent and parameters, then trigger reset to clear previous state.
   // The actual verify command will be sent in handle_reply_() after reset confirmation.
   this->pending_action_ = PENDING_VERIFY;
@@ -115,6 +116,7 @@ void DFRobotAI10Component::start_recognition(uint8_t timeout, bool continuous) {
 }
 
 void DFRobotAI10Component::enroll_user(uint8_t admin, const char *name, uint8_t timeout) {
+  if (this->pending_action_ != PENDING_NONE) return;
   this->pending_action_ = PENDING_ENROLL;
   this->stored_admin_ = admin;
   this->stored_name_ = name;
@@ -123,22 +125,26 @@ void DFRobotAI10Component::enroll_user(uint8_t admin, const char *name, uint8_t 
 }
 
 void DFRobotAI10Component::delete_user(uint16_t uid) {
+  if (this->pending_action_ != PENDING_NONE) return;
   this->pending_action_ = PENDING_DELETE_USER;
   this->stored_uid_ = uid;
   this->send_reset();
 }
 
 void DFRobotAI10Component::delete_all_users() {
+  if (this->pending_action_ != PENDING_NONE) return;
   this->pending_action_ = PENDING_DELETE_ALL;
   this->send_reset();
 }
 
 void DFRobotAI10Component::get_all_user_ids() {
+  if (this->pending_action_ != PENDING_NONE) return;
   this->pending_action_ = PENDING_GET_USERS;
   this->send_reset();
 }
 
 void DFRobotAI10Component::scan_qr_code(uint8_t timeout) {
+  if (this->pending_action_ != PENDING_NONE) return;
   this->pending_action_ = PENDING_SCAN_QR;
   this->stored_timeout_ = timeout;
   this->send_reset();
@@ -265,7 +271,7 @@ uint8_t DFRobotAI10Component::xor_checksum_(const uint8_t *data, size_t len) {
 }
 
 void DFRobotAI10Component::process_packet_(uint8_t msg_id, const uint8_t *payload, uint16_t len) {
-  if (msg_id == MID_RELAY) {
+  if (msg_id == MID_REPLY) {
     this->handle_reply_(payload, len);
   } else if (msg_id == MID_NOTE) {
     this->handle_note_(payload, len);
