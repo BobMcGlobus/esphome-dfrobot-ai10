@@ -11,6 +11,8 @@ The UART protocol was reverse-engineered from the [DFRobot_AI10 Arduino library]
 - **QR code scanning** — read QR codes with configurable timeout
 - **User management** — enroll, delete single users, delete all users, list user IDs
 - **Continuous recognition** — stream recognition results in real-time
+- **ESPHome automations** — native `on_recognized` and `on_qr_scanned` triggers
+- **Non-blocking** — async state machine, no `delay()` calls in the main loop
 - **Home Assistant integration** — buttons, sensors, and binary sensors out of the box
 - **Pure ESPHome** — no Arduino library dependency, works with ESP-IDF framework
 
@@ -86,6 +88,55 @@ dfrobot_ai10:
   uart_id: uart_ai10
 ```
 
+### Automation triggers (recommended)
+
+The component provides native ESPHome triggers for recognition events — no polling required.
+
+#### `on_recognized` — face or palm vein match
+
+Fires when the sensor successfully identifies a registered user. Provides two variables:
+
+- `name` (`std::string`) — the enrolled username
+- `uid` (`uint16_t`) — the user ID (≤1000 = face, >1000 = palm)
+
+```yaml
+dfrobot_ai10:
+  id: ai10_sensor
+  uart_id: uart_ai10
+
+  on_recognized:
+    then:
+      - logger.log:
+          format: "Recognized: %s (UID %d)"
+          args: [ 'name.c_str()', 'uid' ]
+      - homeassistant.event:
+          event: esphome.ai_recognized
+          data:
+            name: !lambda 'return name;'
+            uid: !lambda 'return to_string(uid);'
+```
+
+#### `on_qr_scanned` — QR code read
+
+Fires when a QR code is successfully decoded. Provides one variable:
+
+- `qr_data` (`std::string`) — the decoded QR code content
+
+```yaml
+dfrobot_ai10:
+  id: ai10_sensor
+  uart_id: uart_ai10
+
+  on_qr_scanned:
+    then:
+      - logger.log:
+          format: "QR Code: %s"
+          args: [ 'qr_data.c_str()' ]
+      - text_sensor.template.publish:
+          id: last_qr_code
+          state: !lambda 'return qr_data;'
+```
+
 ### Buttons (appear in Home Assistant)
 
 ```yaml
@@ -125,15 +176,24 @@ api:
         uid: int
       then:
         - lambda: id(ai10_sensor)->delete_user(uid);
+
+    - service: start_recognition
+      variables:
+        timeout: int
+        continuous: bool
+      then:
+        - lambda: id(ai10_sensor)->start_recognition(timeout, continuous);
 ```
 
-### Template sensors (publish recognition results to HA)
+### Template sensors (optional, for HA dashboards)
 
-Use an interval to poll the component state and publish to template sensors. See [example.yaml](example.yaml) for a complete working configuration.
+The `on_recognized` trigger is the recommended way to react to events. If you additionally want persistent state in Home Assistant (e.g. for dashboard cards), you can use template sensors — see [example.yaml](example.yaml) for a complete working configuration.
 
 ## API Reference
 
 All methods can be called from ESPHome lambdas via `id(ai10_sensor)->method()`.
+
+All commands use a **non-blocking state machine**: they send a RESET first, then execute the actual command after the sensor confirms the reset. This means no `delay()` calls block the main loop.
 
 | Method | Description |
 |--------|-------------|
@@ -157,6 +217,13 @@ All methods can be called from ESPHome lambdas via `id(ai10_sensor)->method()`.
 | `get_last_qr_data()` | `std::string` | Content of last scanned QR code |
 | `get_user_count()` | `uint8_t` | Number of enrolled users (after `get_all_user_ids()`) |
 
+### Triggers
+
+| Trigger | Variables | Description |
+|---------|-----------|-------------|
+| `on_recognized` | `name` (string), `uid` (uint16) | Fires on successful face/palm recognition |
+| `on_qr_scanned` | `qr_data` (string) | Fires when a QR code is successfully read |
+
 ## How It Works
 
 ### Face vs. Palm Vein
@@ -169,6 +236,17 @@ The sensor automatically detects whether it sees a face or a palm — there is n
 ### User Names
 
 The sensor uses the **username as a unique key**. You cannot enroll the same name twice — even for different biometric types. To enroll both face and palm for the same person, use slightly different names (e.g., `"Jonas"` for face, `"Jonas-Palm"` for palm vein).
+
+### Non-Blocking Command Flow
+
+Every command follows this async pattern:
+
+1. Public method stores parameters and sets `pending_action_`
+2. A RESET command is sent to abort any running operation
+3. When the RESET reply arrives, `execute_pending_action_()` sends the actual command
+4. The reply is processed and triggers are fired
+
+This ensures the ESP32 main loop is never blocked, keeping WiFi, other components, and the watchdog timer running smoothly.
 
 ### Protocol
 
@@ -183,8 +261,6 @@ RX: [0xEF][0xAA][MsgID][LenH][LenL][payload...][XOR]
 - **Checksum:** XOR of all bytes between sync and checksum
 - **MsgID 0x00 (Reply):** Response to a command — contains `cmd_echo + result + data`
 - **MsgID 0x01 (Note):** Asynchronous notification — face position, bounding box, state
-
-Every command automatically sends a RESET first to abort any running operation (matching the behavior of the Arduino library).
 
 ## Tested Hardware
 
