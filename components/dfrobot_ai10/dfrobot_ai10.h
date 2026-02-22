@@ -1,17 +1,10 @@
 #pragma once
+
 /*
  * DFRobot SEN0677 AI Binocular Vision Sensor - ESPHome External Component
  *
  * Protocol reverse-engineered from DFRobot_AI10 Arduino library (MIT License)
  * https://github.com/DFRobot/DFRobot_AI10
- *
- * Key protocol details:
- *   SyncWord:   0xEF 0xAA
- *   Checksum:   XOR of all bytes between sync and checksum
- *   TX format:  [0xEF][0xAA][CMD][LenH][LenL][payload...][XOR]
- *   RX format:  [0xEF][0xAA][MsgID][LenH][LenL][payload...][XOR]
- *   MsgID 0x00 = Reply (contains: cmd_echo + result + data)
- *   MsgID 0x01 = Note  (contains: face position, state, bounding box)
  */
 
 #include "esphome/core/component.h"
@@ -26,7 +19,7 @@
 namespace esphome {
 namespace dfrobot_ai10 {
 
-// ===== Protocol Constants (from DFRobot_AI10.h) =====
+// ===== Protocol Constants =====
 static const uint8_t SYNC_H = 0xEF;
 static const uint8_t SYNC_L = 0xAA;
 
@@ -79,15 +72,30 @@ enum RecognitionType : uint8_t {
 enum ParserState : uint8_t {
   STATE_WAIT_SYNC_H,
   STATE_WAIT_SYNC_L,
-  STATE_READ_HEADER,   // reading msg_id + lenH + lenL (3 bytes)
-  STATE_READ_PAYLOAD,  // reading payload + XOR checksum
+  STATE_READ_HEADER,
+  STATE_READ_PAYLOAD,
+};
+
+// State Machine for Pending Actions (Non-blocking logic)
+enum PendingAction : uint8_t {
+  PENDING_NONE,
+  PENDING_VERIFY,
+  PENDING_ENROLL,
+  PENDING_DELETE_USER,
+  PENDING_DELETE_ALL,
+  PENDING_GET_USERS,
+  PENDING_SCAN_QR
 };
 
 class DFRobotAI10Component : public Component, public uart::UARTDevice {
  public:
- 
+  // Register callbacks for triggers
   void add_on_recognized_callback(std::function<void(std::string, uint16_t)> &&callback) {
     this->on_recognized_callback_.add(std::move(callback));
+  }
+
+  void add_on_qr_scanned_callback(std::function<void(std::string)> &&callback) {
+    this->on_qr_scanned_callback_.add(std::move(callback));
   }
 
   float get_setup_priority() const override { return setup_priority::DATA; }
@@ -115,39 +123,31 @@ class DFRobotAI10Component : public Component, public uart::UARTDevice {
   uint8_t get_user_count() const { return this->user_count_; }
 
  protected:
-  // CallbackManager
+  // CallbackManagers
   CallbackManager<void(std::string, uint16_t)> on_recognized_callback_;
+  CallbackManager<void(std::string)> on_qr_scanned_callback_;
 
-  // Send a complete packet: [SYNC_H][SYNC_L][data...][XOR]
+  // Protocol helpers
   void send_packet_(const uint8_t *data, size_t len);
-
-  // XOR checksum over data bytes
   static uint8_t xor_checksum_(const uint8_t *data, size_t len);
-
-  // Process a complete received packet
   void process_packet_(uint8_t msg_id, const uint8_t *payload, uint16_t len);
-
-  // Handle reply (MID_RELAY = 0x00)
   void handle_reply_(const uint8_t *payload, uint16_t len);
-
-  // Handle notification (MID_NOTE = 0x01)
   void handle_note_(const uint8_t *payload, uint16_t len);
-
-  // Log hex data helper
   void log_hex_(const char *prefix, const uint8_t *data, size_t len);
-
-  // Result code to human-readable string
   static const char *result_to_str_(uint8_t result);
 
-  // Parser state machine
-  ParserState parser_state_{STATE_WAIT_SYNC_H};
-  uint8_t header_buf_[3];     // msg_id + lenH + lenL
-  uint8_t header_pos_{0};
-  uint8_t payload_buf_[300];  // payload + XOR byte
-  uint16_t payload_len_{0};   // expected payload length (from header)
-  uint16_t payload_pos_{0};   // current position in payload buffer
+  // Helper for State Machine
+  void execute_pending_action_();
 
-  // Last recognition result
+  // Parser vars
+  ParserState parser_state_{STATE_WAIT_SYNC_H};
+  uint8_t header_buf_[3];
+  uint8_t header_pos_{0};
+  uint8_t payload_buf_[300];
+  uint16_t payload_len_{0};
+  uint16_t payload_pos_{0};
+
+  // State vars
   uint16_t last_uid_{0};
   std::string last_user_name_;
   RecognitionType last_type_{TYPE_NONE};
@@ -157,19 +157,36 @@ class DFRobotAI10Component : public Component, public uart::UARTDevice {
   bool face_detected_{false};
   uint8_t user_count_{0};
 
-  // Pending command tracking
-  uint8_t pending_cmd_{0};
-
-  // Timing
+  // State Machine vars
+  PendingAction pending_action_{PENDING_NONE};
+  uint8_t pending_cmd_{0}; // To track current active command
+  
+  // Stored parameters for pending actions
+  uint8_t stored_timeout_{0};
+  bool stored_continuous_{false};
+  uint8_t stored_admin_{0};
+  std::string stored_name_;
+  uint16_t stored_uid_{0};
+  
   uint32_t last_status_log_{0};
   bool setup_done_{false};
 };
 
+// Trigger Classes for ESPHome Automation
 class RecognizedTrigger : public Trigger<std::string, uint16_t> {
  public:
   explicit RecognizedTrigger(DFRobotAI10Component *parent) {
     parent->add_on_recognized_callback([this](std::string name, uint16_t uid) {
       this->trigger(name, uid);
+    });
+  }
+};
+
+class QRScannedTrigger : public Trigger<std::string> {
+ public:
+  explicit QRScannedTrigger(DFRobotAI10Component *parent) {
+    parent->add_on_qr_scanned_callback([this](std::string data) {
+      this->trigger(data);
     });
   }
 };

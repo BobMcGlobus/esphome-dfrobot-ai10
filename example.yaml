@@ -75,15 +75,59 @@ uart:
   baud_rate: 115200 # Fixed, cannot be changed
 
 
-# ===== SEN0677 Component =====
+# ===== SEN0677 Component with Triggers =====
 dfrobot_ai10:
   id: ai10_sensor
   uart_id: uart_ai10
 
+  # Fires when a registered face or palm is recognized
+  on_recognized:
+    then:
+      - lambda: |-
+          // 'name' and 'uid' are provided by the trigger
+          auto type = id(ai10_sensor)->get_last_type();
+          std::string type_str = "face";
+          if (type == esphome::dfrobot_ai10::TYPE_PALM) type_str = "palm";
+
+          ESP_LOGI("ai10", "Authorized: %s (UID %d, %s)", name.c_str(), uid, type_str.c_str());
+      - text_sensor.template.publish:
+          id: ai_recognized_user
+          state: !lambda 'return name;'
+      - sensor.template.publish:
+          id: ai_recognized_uid
+          state: !lambda 'return uid;'
+      - binary_sensor.template.publish:
+          id: ai_authorized
+          state: true
+      - text_sensor.template.publish:
+          id: ai_recognition_state
+          state: "authorized"
+      # Auto-reset after 30 seconds
+      - delay: 30s
+      - binary_sensor.template.publish:
+          id: ai_authorized
+          state: false
+      - text_sensor.template.publish:
+          id: ai_recognition_state
+          state: "idle"
+
+  # Fires when a QR code is successfully scanned
+  on_qr_scanned:
+    then:
+      - text_sensor.template.publish:
+          id: ai_qr_code
+          state: !lambda 'return qr_data;'
+      - text_sensor.template.publish:
+          id: ai_recognition_state
+          state: "qr_scanned"
+      - logger.log:
+          format: "QR Code scanned: %s"
+          args: [ 'qr_data.c_str()' ]
+
 
 # ===== Buttons (appear in HA as pressable buttons) =====
 button:
-  # Start face/palm recognition (continuous, 30s)
+  # Start face/palm recognition (continuous, 30s timeout)
   - platform: template
     name: "AI Start Recognition"
     icon: "mdi:face-recognition"
@@ -93,7 +137,7 @@ button:
           id: ai_recognition_state
           state: "scanning"
 
-  # Stop recognition
+  # Stop any running operation
   - platform: template
     name: "AI Stop Recognition"
     icon: "mdi:stop-circle-outline"
@@ -126,7 +170,7 @@ button:
     on_press:
       - lambda: id(ai10_sensor)->get_all_user_ids();
 
-  # Delete ALL registered users
+  # Delete ALL registered users (use with caution!)
   - platform: template
     name: "AI Delete All Users"
     icon: "mdi:account-multiple-remove"
@@ -144,42 +188,12 @@ button:
           state: "idle"
 
 
-# ===== Interval: publish AI10 state to template sensors =====
+# ===== Interval: poll face_detected status =====
 interval:
   - interval: 500ms
     then:
       - lambda: |-
-          auto *ai = id(ai10_sensor);
-
-          if (ai->is_recognized()) {
-            auto name = ai->get_last_user_name();
-            auto uid = ai->get_last_uid();
-            auto type = ai->get_last_type();
-
-            std::string type_str = "unknown";
-            if (type == esphome::dfrobot_ai10::TYPE_FACE) type_str = "face";
-            else if (type == esphome::dfrobot_ai10::TYPE_PALM) type_str = "palm";
-            else if (type == esphome::dfrobot_ai10::TYPE_QR) type_str = "qr";
-
-            if (id(ai_recognized_user).state != name)
-              id(ai_recognized_user).publish_state(name);
-            if (id(ai_recognized_uid).state != uid)
-              id(ai_recognized_uid).publish_state(uid);
-            if (id(ai_recognition_state).state != type_str)
-              id(ai_recognition_state).publish_state(type_str);
-
-            if (type == esphome::dfrobot_ai10::TYPE_QR) {
-              auto qr = ai->get_last_qr_data();
-              if (id(ai_qr_code).state != qr)
-                id(ai_qr_code).publish_state(qr);
-            }
-
-            bool authorized = uid > 0;
-            if (id(ai_authorized).state != authorized)
-              id(ai_authorized).publish_state(authorized);
-          }
-
-          bool face = ai->is_face_detected();
+          bool face = id(ai10_sensor)->is_face_detected();
           if (id(ai_face_detected).state != face)
             id(ai_face_detected).publish_state(face);
 
