@@ -105,8 +105,51 @@ void DFRobotAI10Component::send_reset() {
   ESP_LOGI(TAG, "CMD: RESET (0x10)");
 }
 
+void DFRobotAI10Component::stop_recognition() {
+  ESP_LOGI(TAG, "STOP recognition requested");
+
+  // Clear local state IMMEDIATELY so HA/UI reflects "stopped" without waiting
+  // for the sensor to actually acknowledge. The sensor may still finish its
+  // current frame, but from the outside everything is already reset.
+  this->recognized_ = false;
+  this->face_detected_ = false;
+  this->last_uid_ = 0;
+  this->last_user_name_.clear();
+  this->last_type_ = TYPE_NONE;
+  this->pending_action_ = PENDING_NONE;
+  this->pending_cmd_ = 0;
+
+  // The SEN0677 accepts CMD_RESET during continuous verify and replies
+  // "success", but RESET does NOT actually abort the running verify — the
+  // IR camera keeps scanning. There is no dedicated abort command in the
+  // protocol. Workaround: override the long continuous verify with a new
+  // very-short one-shot verify (timeout=1s, continuous=false). The sensor
+  // replaces the active verify with the new one, which then self-terminates
+  // after 1 second. A final RESET afterwards returns the sensor to idle.
+  this->send_reset();
+  this->set_timeout("ai10_stop_override", 80, [this]() {
+    uint8_t data[] = {
+      CMD_VERIFY,
+      0x00, 0x02,
+      0x00,  // continuous = false
+      0x01   // timeout = 1 second
+    };
+    this->send_packet_(data, sizeof(data));
+    this->pending_cmd_ = CMD_VERIFY;
+    ESP_LOGI(TAG, "CMD: VERIFY override (stop) continuous=0 timeout=1s");
+  });
+  this->set_timeout("ai10_stop_final", 1500, [this]() {
+    this->send_reset();
+    this->recognized_ = false;
+    this->face_detected_ = false;
+  });
+}
+
 void DFRobotAI10Component::start_recognition(uint8_t timeout, bool continuous) {
   if (this->pending_action_ != PENDING_NONE) return;
+  // Cancel any pending stop timers so they don't interfere with a fresh start
+  this->cancel_timeout("ai10_stop_override");
+  this->cancel_timeout("ai10_stop_final");
   // Store intent and parameters, then trigger reset to clear previous state.
   // The actual verify command will be sent in handle_reply_() after reset confirmation.
   this->pending_action_ = PENDING_VERIFY;
