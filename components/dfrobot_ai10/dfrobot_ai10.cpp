@@ -119,25 +119,37 @@ void DFRobotAI10Component::stop_recognition() {
   this->pending_action_ = PENDING_NONE;
   this->pending_cmd_ = 0;
 
-  // The SEN0677 does not service incoming UART commands while a continuous
-  // CMD_VERIFY is running — it only reacts between frames / when idle.
-  // A single RESET therefore often gets ignored until a face is detected.
-  // Workaround: send RESET now and retry a few times with increasing delays
-  // to hit a moment where the sensor is able to process it.
+  // The SEN0677 accepts CMD_RESET during continuous verify and replies
+  // "success", but RESET does NOT actually abort the running verify — the
+  // IR camera keeps scanning. There is no dedicated abort command in the
+  // protocol. Workaround: override the long continuous verify with a new
+  // very-short one-shot verify (timeout=1s, continuous=false). The sensor
+  // replaces the active verify with the new one, which then self-terminates
+  // after 1 second. A final RESET afterwards returns the sensor to idle.
   this->send_reset();
-  this->set_timeout("ai10_stop_r1", 100, [this]() { this->send_reset(); });
-  this->set_timeout("ai10_stop_r2", 300, [this]() { this->send_reset(); });
-  this->set_timeout("ai10_stop_r3", 800, [this]() { this->send_reset(); });
-  this->set_timeout("ai10_stop_r4", 1500, [this]() { this->send_reset(); });
+  this->set_timeout("ai10_stop_override", 80, [this]() {
+    uint8_t data[] = {
+      CMD_VERIFY,
+      0x00, 0x02,
+      0x00,  // continuous = false
+      0x01   // timeout = 1 second
+    };
+    this->send_packet_(data, sizeof(data));
+    this->pending_cmd_ = CMD_VERIFY;
+    ESP_LOGI(TAG, "CMD: VERIFY override (stop) continuous=0 timeout=1s");
+  });
+  this->set_timeout("ai10_stop_final", 1500, [this]() {
+    this->send_reset();
+    this->recognized_ = false;
+    this->face_detected_ = false;
+  });
 }
 
 void DFRobotAI10Component::start_recognition(uint8_t timeout, bool continuous) {
   if (this->pending_action_ != PENDING_NONE) return;
-  // Cancel any pending stop-retries so they don't reset a freshly started verify
-  this->cancel_timeout("ai10_stop_r1");
-  this->cancel_timeout("ai10_stop_r2");
-  this->cancel_timeout("ai10_stop_r3");
-  this->cancel_timeout("ai10_stop_r4");
+  // Cancel any pending stop timers so they don't interfere with a fresh start
+  this->cancel_timeout("ai10_stop_override");
+  this->cancel_timeout("ai10_stop_final");
   // Store intent and parameters, then trigger reset to clear previous state.
   // The actual verify command will be sent in handle_reply_() after reset confirmation.
   this->pending_action_ = PENDING_VERIFY;
