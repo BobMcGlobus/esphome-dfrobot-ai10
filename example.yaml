@@ -142,7 +142,7 @@ button:
     name: "AI Stop Recognition"
     icon: "mdi:stop-circle-outline"
     on_press:
-      - lambda: id(ai10_sensor)->send_reset();
+      - lambda: id(ai10_sensor)->stop_recognition();
       - text_sensor.template.publish:
           id: ai_recognition_state
           state: "idle"

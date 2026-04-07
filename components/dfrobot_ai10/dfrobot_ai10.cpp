@@ -105,8 +105,39 @@ void DFRobotAI10Component::send_reset() {
   ESP_LOGI(TAG, "CMD: RESET (0x10)");
 }
 
+void DFRobotAI10Component::stop_recognition() {
+  ESP_LOGI(TAG, "STOP recognition requested");
+
+  // Clear local state IMMEDIATELY so HA/UI reflects "stopped" without waiting
+  // for the sensor to actually acknowledge. The sensor may still finish its
+  // current frame, but from the outside everything is already reset.
+  this->recognized_ = false;
+  this->face_detected_ = false;
+  this->last_uid_ = 0;
+  this->last_user_name_.clear();
+  this->last_type_ = TYPE_NONE;
+  this->pending_action_ = PENDING_NONE;
+  this->pending_cmd_ = 0;
+
+  // The SEN0677 does not service incoming UART commands while a continuous
+  // CMD_VERIFY is running — it only reacts between frames / when idle.
+  // A single RESET therefore often gets ignored until a face is detected.
+  // Workaround: send RESET now and retry a few times with increasing delays
+  // to hit a moment where the sensor is able to process it.
+  this->send_reset();
+  this->set_timeout("ai10_stop_r1", 100, [this]() { this->send_reset(); });
+  this->set_timeout("ai10_stop_r2", 300, [this]() { this->send_reset(); });
+  this->set_timeout("ai10_stop_r3", 800, [this]() { this->send_reset(); });
+  this->set_timeout("ai10_stop_r4", 1500, [this]() { this->send_reset(); });
+}
+
 void DFRobotAI10Component::start_recognition(uint8_t timeout, bool continuous) {
   if (this->pending_action_ != PENDING_NONE) return;
+  // Cancel any pending stop-retries so they don't reset a freshly started verify
+  this->cancel_timeout("ai10_stop_r1");
+  this->cancel_timeout("ai10_stop_r2");
+  this->cancel_timeout("ai10_stop_r3");
+  this->cancel_timeout("ai10_stop_r4");
   // Store intent and parameters, then trigger reset to clear previous state.
   // The actual verify command will be sent in handle_reply_() after reset confirmation.
   this->pending_action_ = PENDING_VERIFY;

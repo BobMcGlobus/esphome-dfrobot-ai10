@@ -111,6 +111,7 @@ class DFRobotAI10Component : public Component, public uart::UARTDevice {
   void get_all_user_ids();
   void scan_qr_code(uint8_t timeout);
   void send_reset();
+  void stop_recognition();
 
   // Getters for template sensors
   uint16_t get_last_uid() const { return this->last_uid_; }
